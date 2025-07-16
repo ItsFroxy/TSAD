@@ -1,0 +1,8 @@
+synthetic_realistic_unlabeled_dataset.json
+synthetic_wearable_dataset.json
+synthetic_wearable_tsad_dataset.json
+synthetic_healthcare_timeseries.json
+tsad-env/
+__pycache__/
+*.pyc
+
