@@ -6,127 +6,127 @@ from datetime import timedelta
 np.random.seed(42)
 
 # Configuration
-num_patients = 50
-minutes_per_day = 24 * 60
-days = 7
-total_minutes = minutes_per_day * days
+NUM_PATIENTS = 30
+DAYS = 7
+MINUTES_PER_DAY = 24 * 60
+RECORDS_PER_PATIENT = DAYS * MINUTES_PER_DAY
 
-# Define activity levels
 activity_levels = ["Idle", "Light", "Moderate", "Vigorous"]
-activity_probs = np.array([0.5, 0.2, 0.2, 0.1])
+base_activity_probs = np.array([0.5, 0.2, 0.2, 0.1])
+possible_allergies = ["Penicillin", "Peanuts", "Shellfish", "Aspirin", "Pollen", "Dust"]
+blood_types = ["O+", "A+", "B+", "AB+", "O-", "A-", "B-", "AB-"]
+blood_type_probs = np.array([0.374, 0.357, 0.085, 0.034, 0.066, 0.063, 0.015, 0.006])
+blood_type_probs /= blood_type_probs.sum()
 
-# Define patient profiles
-patients = []
+def assign_condition(age):
+    if age < 40:
+        return np.random.choice(["None", "Hypertension", "Diabetes"], p=[0.90, 0.05, 0.05])
+    elif age < 60:
+        return np.random.choice(["None", "Hypertension", "Diabetes", "Hypertension+Diabetes"], p=[0.60, 0.20, 0.15, 0.05])
+    else:
+        return np.random.choice(["None", "Hypertension", "Diabetes", "Hypertension+Diabetes"], p=[0.40, 0.25, 0.25, 0.10])
 
-for pid in range(1, num_patients + 1):
+def generate_patient(person_id, inject_anomaly=False):
     age = np.random.randint(18, 80)
     gender = np.random.choice(["M", "F"])
-    height_cm = np.round(np.random.normal(175 if gender == "M" else 162, 7), 1)
-    weight_kg = np.round(np.random.normal(70 if gender == "M" else 60, 10), 1)
-    patient = {
-        "patient_id": f"P{pid:03}",
+    condition = assign_condition(age)
+    
+    height_cm = np.random.normal(175 if gender=="M" else 162, 10 if gender=="M" else 8)
+    height_cm = float(np.clip(height_cm, 140, 200))
+
+    bmi = 24 if condition == "None" else (28 if condition in ["Hypertension", "Diabetes"] else 30)
+    bmi += np.random.normal(0, 3)
+    bmi = np.clip(bmi, 18, 40)
+    weight_kg = round(bmi * ((height_cm/100)**2), 1)
+
+    blood_type = np.random.choice(blood_types, p=blood_type_probs)
+    allergies = []
+    if np.random.rand() < 0.2:
+        allergies = list(np.random.choice(possible_allergies, size=np.random.randint(1,3), replace=False))
+
+    chronic_conditions = [] if condition == "None" else condition.split("+")
+    medications = []
+    if "Hypertension" in chronic_conditions:
+        medications.append("Metoprolol")
+    if "Diabetes" in chronic_conditions:
+        medications.append("Metformin")
+
+    resting_hr = int(np.clip(60 + 0.1*age + (3 if gender=="F" else 0) + (5 if condition!="None" else 0), 50, 100))
+    max_hr = max(int(np.clip(220 - age + np.random.randint(-5,6) - (5 if "Hypertension" in chronic_conditions else 0), 100, 220)), resting_hr + 20)
+
+    patient_data = {
+        "patient_id": f"P{person_id:03d}",
         "gender": gender,
         "age": age,
         "height_cm": height_cm,
         "weight_kg": weight_kg,
-        "blood_type": np.random.choice(["O+", "A+", "B+", "AB+", "O-", "A-", "B-", "AB-"]),
-        "allergies": [],
-        "chronic_conditions": [],
-        "medications": [],
+        "blood_type": blood_type,
+        "allergies": allergies,
+        "chronic_conditions": chronic_conditions,
+        "medications": medications,
         "time_series": []
     }
 
-    # Anomaly injection flags
-    inject_anomaly = np.random.rand() < 0.3  # 30% of patients will have hidden anomalies
-    anomaly_start = np.random.randint(1 * 1440, 5 * 1440) if inject_anomaly else -1  # day 2–5
-    anomaly_duration = np.random.randint(30, 90)  # 30–90 minutes
-
-    # Generate time-series
     start_time = pd.Timestamp("2025-01-01")
-    for minute in range(total_minutes):
-        timestamp = start_time + timedelta(minutes=minute)
-        hour = timestamp.hour
-
+    for i in range(RECORDS_PER_PATIENT):
+        t = start_time + timedelta(minutes=i)
+        hour = t.hour
         sleeping = hour >= 23 or hour < 6
-        activity = "Idle" if sleeping else np.random.choice(activity_levels, p=activity_probs)
-        in_anomaly = inject_anomaly and anomaly_start <= minute < (anomaly_start + anomaly_duration)
+        activity = "Idle" if sleeping else np.random.choice(activity_levels, p=base_activity_probs)
+        
+        # Vital signs
+        heart_rate = resting_hr + (5 if activity == "Light" else 15 if activity == "Moderate" else 25 if activity == "Vigorous" else 0) + np.random.normal(0, 2)
+        spo2 = 98 - (2 if activity in ["Moderate","Vigorous"] else 0) + np.random.normal(0,1)
+        respiratory_rate = 14 + (5 if activity == "Light" else 10 if activity == "Moderate" else 20 if activity == "Vigorous" else 0) + np.random.normal(0,1)
+        hrv = 80 - (30 if activity in ["Moderate","Vigorous"] else 0) + np.random.normal(0,5)
+        eda = 0.1 + (0.5 if activity == "Vigorous" else 0.2) + np.random.normal(0, 0.05)
+        temperature = 36.5 + (0.5 if activity in ["Moderate", "Vigorous"] else 0) + np.random.normal(0, 0.1)
+        skin_temp = temperature - (1.5 if activity == "Vigorous" else 0.5)
+        steps = np.random.poisson(1 if activity == "Idle" else 60)
+        calories = steps * (0.04 if activity in ["Moderate", "Vigorous"] else 0.02)
 
-        # Base values
-        heart_rate = np.random.normal(60, 5)
-        spo2 = np.random.normal(98, 1)
-        respiratory_rate = np.random.normal(14, 2)
-        systolic_bp = np.random.normal(115, 5)
-        diastolic_bp = np.random.normal(75, 3)
-        temperature = np.random.normal(36.5, 0.2)
-        skin_temp = temperature - 0.5
-        hrv = np.random.normal(70, 10)
-        eda = np.random.normal(0.1, 0.05)
-        steps = 0
-        calories_burned = 0.0
-        sleep_stage = np.random.choice(["Light", "Deep", "REM"]) if sleeping else None
-        state_context = "deep_sleep" if sleeping else ("exercise" if activity in ["Moderate", "Vigorous"] else "resting")
+        state = "anomaly" if inject_anomaly and 2000 < i < 2020 else (
+            "exercise" if activity in ["Moderate", "Vigorous"] else
+            "light_activity" if activity == "Light" else
+            "resting"
+        )
 
-        # Adjust by activity
-        if activity == "Light":
-            heart_rate += 15
-            steps = np.random.poisson(60)
-            calories_burned = round(steps * 0.03, 2)
-        elif activity == "Moderate":
-            heart_rate += 30
-            steps = np.random.poisson(100)
-            calories_burned = round(steps * 0.04, 2)
-            respiratory_rate += 5
-            eda += 0.3
-        elif activity == "Vigorous":
-            heart_rate += 50
-            steps = np.random.poisson(140)
-            calories_burned = round(steps * 0.05, 2)
+        # Inject realistic anomaly (e.g., low SpO2 → correlated vitals)
+        if inject_anomaly and 2000 < i < 2020:
+            spo2 = 89
+            heart_rate += 20
             respiratory_rate += 10
-            eda += 0.5
-            temperature += 0.3
+            eda += 1.0
+            hrv -= 30
+            state = "anomaly"
 
-        # Inject medically realistic hidden anomalies
-        if in_anomaly:
-            # Drop in oxygen saturation → higher HR, RR, EDA
-            spo2 -= np.random.uniform(4, 7)  # drop by 4–7%
-            heart_rate += np.random.uniform(15, 30)
-            respiratory_rate += np.random.uniform(5, 10)
-            eda += np.random.uniform(0.5, 1.0)
-            hrv -= np.random.uniform(15, 25)
-            state_context = "anomaly"
-
-        # Clamp and round
-        spo2 = int(np.clip(spo2, 85, 100))
-        heart_rate = int(np.clip(heart_rate, 40, 200))
-        respiratory_rate = int(np.clip(respiratory_rate, 8, 50))
-        systolic_bp = int(np.clip(systolic_bp, 90, 180))
-        diastolic_bp = int(np.clip(diastolic_bp, 50, 120))
-        hrv = int(np.clip(hrv, 10, 150))
-        eda = float(np.round(np.clip(eda, 0.01, 5.0), 2))
-        temperature = float(np.round(temperature, 1))
-        skin_temp = float(np.round(skin_temp, 1))
-
-        patient["time_series"].append({
-            "timestamp": timestamp.strftime("%Y-%m-%d %H:%M"),
-            "heart_rate": heart_rate,
-            "spo2": spo2,
-            "respiratory_rate": respiratory_rate,
-            "systolic_bp": systolic_bp,
-            "diastolic_bp": diastolic_bp,
-            "temperature": temperature,
-            "hrv": hrv,
-            "steps": steps,
-            "calories_burned": calories_burned,
-            "skin_temp": skin_temp,
-            "eda": eda,
-            "sleep_stage": sleep_stage,
-            "state_context": state_context
+        patient_data["time_series"].append({
+            "timestamp": str(t),
+            "heart_rate": round(heart_rate),
+            "spo2": int(np.clip(spo2, 85, 100)),
+            "respiratory_rate": int(np.clip(respiratory_rate, 10, 40)),
+            "systolic_bp": int(np.random.normal(120, 10)),
+            "diastolic_bp": int(np.random.normal(80, 5)),
+            "temperature": round(np.clip(temperature, 35.5, 38.5), 1),
+            "hrv": int(np.clip(hrv, 5, 150)),
+            "steps": int(steps),
+            "calories_burned": round(calories, 2),
+            "skin_temp": round(skin_temp, 1),
+            "eda": round(eda, 2),
+            "state_context": state
         })
 
-    patients.append(patient)
+    return patient_data
 
-# Save to JSON
-with open("synthetic_realistic_unlabeled_dataset.json", "w") as f:
-    json.dump(patients, f, indent=2)
+# --- Generate Patients ---
+healthy_patients = [generate_patient(i+1, inject_anomaly=False) for i in range(20)]
+mixed_patients = healthy_patients + [generate_patient(i+21, inject_anomaly=True) for i in range(10)]
 
-print("✅ Dataset saved as 'synthetic_realistic_unlabeled_dataset.json'")
+# --- Save JSON ---
+with open("healthy_data.json", "w") as f:
+    json.dump(healthy_patients, f, indent=2)
+
+with open("mixed_data.json", "w") as f:
+    json.dump(mixed_patients, f, indent=2)
+
+print("✅ Saved healthy_data.json (20 patients) and mixed_data.json (30 patients total)")

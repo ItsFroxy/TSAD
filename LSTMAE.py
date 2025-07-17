@@ -1,71 +1,85 @@
-import json, numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
+import json
+import os
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, RepeatVector, TimeDistributed, Dense
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import precision_score, recall_score, f1_score, classification_report, confusion_matrix
-from tensorflow.keras import Model, Input
-from tensorflow.keras.layers import Bidirectional, LSTM, RepeatVector, TimeDistributed, Dense
-import matplotlib.pyplot as plt
+from sklearn.metrics import classification_report, confusion_matrix, precision_score, recall_score, f1_score
 
-# 1️⃣ Load dataset
-with open("synthetic_realistic_unlabeled_dataset.json") as f:
-    patients = json.load(f)
+# === Step 1: Load Healthy + Mixed Data ===
+with open('healthy_data.json') as f:
+    healthy_data = json.load(f)
 
-# 2️⃣ Prepare windows
-W = 60
-timeseries, labels = [], []
+with open('mixed_data.json') as f:
+    mixed_data = json.load(f)
 
-for p in patients:
-    df = pd.DataFrame(p['time_series']).sort_values('timestamp')
-    scaler = MinMaxScaler()
-    X = scaler.fit_transform(df[['heart_rate','spo2','temperature','steps','respiratory_rate','systolic_bp','diastolic_bp','hrv','eda','skin_temp']])
-    label = 1 if not p.get('reviewed', True) else 0
+features = ['heart_rate','spo2','respiratory_rate','systolic_bp','diastolic_bp','temperature','hrv','steps','calories_burned','skin_temp','eda']
+window_size = 60
 
-    for i in range(len(X) - W + 1):
-        timeseries.append(X[i:i+W])
-        labels.append(label)
+# === Step 2: Prepare Data ===
+def extract_windows(patients, label=None):
+    windows, labels = [], []
+    for person in patients:
+        ts = pd.DataFrame(person['time_series'])[features].dropna().values
+        for i in range(len(ts) - window_size + 1):
+            win = ts[i:i+window_size]
+            windows.append(win)
+            labels.append(label)
+    return np.array(windows), np.array(labels)
 
-X = np.array(timeseries); y = np.array(labels)
-idx = np.random.permutation(len(X)); n80 = int(0.8 * len(idx))
-train_idx, test_idx = idx[:n80], idx[n80:]
+# Train only on normal
+X_train, _ = extract_windows(healthy_data, label=0)
 
-X_train = X[train_idx][y[train_idx]==0]  # train only on normal
-X_test, y_test = X[test_idx], y[test_idx]
+# Test on mixed (assume anomaly present if state_context is 'anomaly')
+def is_anomaly(ts): return any(x.get("state_context") == "anomaly" for x in ts)
+X_test, y_test = [], []
+for person in mixed_data:
+    ts_df = pd.DataFrame(person['time_series'])
+    ts = ts_df[features].dropna().values
+    for i in range(len(ts) - window_size + 1):
+        win = ts[i:i+window_size]
+        label = int(any(ts_df.iloc[i:i+window_size]['state_context'] == "anomaly"))
+        X_test.append(win)
+        y_test.append(label)
+X_test = np.array(X_test)
+y_test = np.array(y_test)
 
-# 3️⃣ Build Bi‑LSTM Autoencoder
-n_features = X.shape[2]
-latent = 64
+# Scale
+scaler = MinMaxScaler()
+X_train = scaler.fit_transform(X_train.reshape(-1, len(features))).reshape(X_train.shape)
+X_test = scaler.transform(X_test.reshape(-1, len(features))).reshape(X_test.shape)
 
-inp = Input((W, n_features))
-enc = Bidirectional(LSTM(latent, activation='tanh'))(inp)
-dec = RepeatVector(W)(enc)
-dec = Bidirectional(LSTM(latent, activation='tanh', return_sequences=True))(dec)
-out = TimeDistributed(Dense(n_features))(dec)
+# === Step 3: LSTM Autoencoder ===
+input_dim = len(features)
+inputs = Input(shape=(window_size, input_dim))
+x = LSTM(64, activation="tanh")(inputs)
+x = RepeatVector(window_size)(x)
+x = LSTM(64, activation="tanh", return_sequences=True)(x)
+outputs = TimeDistributed(Dense(input_dim))(x)
 
-model = Model(inp, out)
-model.compile(optimizer='adam', loss='mse')
-model.summary()
+model = Model(inputs, outputs)
+model.compile(optimizer="adam", loss="mse")
+model.fit(X_train, X_train, epochs=20, batch_size=32, validation_split=0.1, verbose=1)
 
-# 4️⃣ Train
-model.fit(X_train, X_train, epochs=20, batch_size=64, validation_split=0.1, verbose=2)
+# === Step 4: Threshold from training ===
+recons = model.predict(X_train)
+train_mse = np.mean(np.square(X_train - recons), axis=(1,2))
+threshold = np.mean(train_mse) + 3*np.std(train_mse)
+print(f"Threshold (μ + 3σ): {threshold:.5f}")
 
-# 5️⃣ Define Threshold using 95th percentile
-train_pred = model.predict(X_train)
-train_mse = np.mean((train_pred - X_train)**2, axis=(1,2))
-threshold = np.percentile(train_mse, 95)
-print(f"⚠️ Detection threshold set at 95th percentile: {threshold:.5f}")
-
-# 6️⃣ Detect Anomalies
-test_pred = model.predict(X_test)
-mse_test = np.mean((test_pred - X_test)**2, axis=(1,2))
+# === Step 5: Evaluate on test set ===
+X_pred = model.predict(X_test)
+mse_test = np.mean(np.square(X_test - X_pred), axis=(1,2))
 y_pred = (mse_test > threshold).astype(int)
 
-# 7️⃣ Evaluate
-print("=== Classification Report ===")
+# === Step 6: Metrics ===
+print("\n=== Evaluation Report ===")
 print(classification_report(y_test, y_pred, digits=4))
-tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
-print("TN", tn, "FP", fp, "FN", fn, "TP", tp)
-
-# 8️⃣ Visualize Error Distribution
-plt.hist(mse_test[y_test==0], bins=100, alpha=0.6, label='Normal')
-plt.hist(mse_test[y_test==1], bins=100, alpha=0.6, label='Anomaly')
-plt.axvline(threshold, color='r', linestyle='--')
-plt.legend(); plt.title("Reconstruction Error (95th-centile threshold)"); plt.show()
+cm = confusion_matrix(y_test, y_pred)
+tn, fp, fn, tp = cm.ravel()
+print(f"True Negatives: {tn}\nFalse Positives: {fp}\nFalse Negatives: {fn}\nTrue Positives: {tp}")
+print(f"Accuracy: {(tp + tn) / (tp + tn + fp + fn):.4f}")
+print(f"Precision: {precision_score(y_test, y_pred):.4f}")
+print(f"Recall: {recall_score(y_test, y_pred):.4f}")
+print(f"F1-score: {f1_score(y_test, y_pred):.4f}")
