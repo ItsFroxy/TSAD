@@ -1,23 +1,6 @@
-# === Dataset files ===
-*.json
-
-# === Data formats ===
-*.csv
-*.npy
-*.npz
-*.pkl
-*.h5
-
-# === Virtual environments ===
-tsad-env/
-.venv/
-env/
-venv/
-
-# === Python cache ===
-__pycache__/
-*.pyc
-
-# === Logs or temp ===
-*.log
-*.tmp
+synthetic_realistic_unlabeled_dataset/
+mixed_data/
+healthy_data/
+synthetic_wearable_dataset/
+synthetic_wearable_tsad_dataset/
+synthetic_healthcare_timeseries/
